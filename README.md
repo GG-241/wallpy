@@ -1,8 +1,13 @@
 # wallpy
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Open Source](https://img.shields.io/badge/open%20source-yes-brightgreen.svg)](https://github.com/GG-241/wallpy)
+
 A lightweight, cross-platform screensaver that displays randomly generated animated art when your computer has been idle for a set amount of time. Built to use minimal CPU and RAM — it is designed to be left running in the background permanently.
 
 On multi-monitor setups, wallpy covers every screen simultaneously, with each display running its own independently animated art mode.
+
+wallpy is **open source** under the [MIT License](LICENSE). Contributions, bug reports, and custom art modes are welcome — see [Contributing](#contributing) below.
 
 ---
 
@@ -179,6 +184,16 @@ python3 -c "import tkinter; print('tkinter OK')"
 
 ---
 
+## Support
+
+If you find wallpy useful, you can buy me a coffee:
+
+[![Buy Me a Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/imgg)
+
+<a href="https://buymeacoffee.com/imgg"><img src="assets/qr-buymeacoffee.png" width="160" alt="QR code — buymeacoffee.com/imgg"></a>
+
+---
+
 ## Options
 
 | Flag | Short | Default | Description |
@@ -191,3 +206,108 @@ python3 -c "import tkinter; print('tkinter OK')"
 | `--date` | — | off | Overlay current date on all modes |
 | `--preview` | `-p` | — | Launch immediately, skip idle check |
 | `--list-modes` | — | — | Print available modes and exit |
+
+---
+
+## Modding — adding a custom art mode
+
+All animation logic lives in `screensaver.py`. Every art mode is a class that inherits from `ArtMode` and implements two methods.
+
+### ArtMode API
+
+```python
+class ArtMode:
+    description: str          # shown by --list-modes
+
+    def setup(self, canvas: tk.Canvas, width: int,
+              height: int, config: dict) -> None:
+        """Called once. Create all canvas items here — do NOT create
+        items inside tick(). Store item IDs on self for reuse."""
+
+    def tick(self) -> None:
+        """Called every frame. Move/recolour existing canvas items.
+        Never call canvas.create_*() here — only canvas.coords(),
+        canvas.itemconfig(), etc."""
+```
+
+`config` is a dict that may contain:
+- `show_time` / `show_date` — bool, whether the clock overlay is active
+- `words_file` — str path, only relevant to text-based modes
+
+### Step-by-step: writing a new mode
+
+**1. Subclass `ArtMode`**
+
+```python
+class Pulse(ArtMode):
+    description = "Expanding concentric rings"
+
+    def setup(self, canvas, width, height, config):
+        self.canvas = canvas
+        self.cx, self.cy = width // 2, height // 2
+        self.rings = [
+            canvas.create_oval(0, 0, 0, 0, outline="#00ff88", width=2)
+            for _ in range(6)
+        ]
+        self.phase = 0
+
+    def tick(self):
+        self.phase = (self.phase + 2) % 360
+        for i, ring in enumerate(self.rings):
+            offset = (self.phase + i * 60) % 360
+            r = int(50 + 200 * (offset / 360))
+            self.canvas.coords(ring,
+                self.cx - r, self.cy - r,
+                self.cx + r, self.cy + r)
+            alpha = int(255 * (1 - offset / 360))
+            colour = f"#{alpha:02x}ff{alpha:02x}"
+            self.canvas.itemconfig(ring, outline=colour)
+```
+
+**2. Register the mode**
+
+Find the `MODES` dict near the bottom of `screensaver.py` and add your class:
+
+```python
+MODES = {
+    "textwaterfall":    TextWaterfall,
+    "matrix_continuous": MatrixContinuous,
+    "stars":            Starfield,
+    "shapes":           BouncingShapes,
+    "lissajous":        Lissajous,
+    "life":             GameOfLife,
+    "web":              ParticleWeb,
+    "pulse":            Pulse,          # ← your new mode
+}
+```
+
+**3. Test it**
+
+```bash
+python3 screensaver.py --preview --mode pulse
+```
+
+### Tips
+
+- `setup()` is the **only** place to call `canvas.create_*()`. Pre-allocate every item you will ever need.
+- `tick()` should only call `canvas.coords()`, `canvas.itemconfig()`, or similar — never create or delete items.
+- Keep `tick()` fast. At 30 FPS you have ~33 ms per frame across all monitors.
+- Use `colorsys.hsv_to_rgb()` (already imported) for smooth colour cycling.
+- The `config` dict is passed to both `setup()` and is accessible as `self.config` if you store it.
+
+---
+
+## Contributing
+
+1. Fork the repository on GitHub: [github.com/GG-241/wallpy](https://github.com/GG-241/wallpy)
+2. Create a branch: `git checkout -b my-new-mode`
+3. Make your changes and test them with `--preview`
+4. Open a pull request with a short description and a screenshot or GIF of your mode
+
+All contributions are welcome: new art modes, bug fixes, platform improvements, or documentation.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for the full text.

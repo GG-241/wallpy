@@ -21,6 +21,7 @@ Usage:
 
 import sys
 import re
+import json
 import math
 import time
 import random
@@ -29,6 +30,7 @@ import platform
 import subprocess
 import argparse
 import tkinter as tk
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 
@@ -869,10 +871,327 @@ def monitor(idle_threshold: float, mode: Optional[str], fps: int,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SETTINGS / CONTROL UI  (shown when launched as a .app bundle)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WallpyApp:
+    """Settings window and monitoring controller for GUI / .app mode."""
+
+    _CONFIG = Path.home() / ".wallpy" / "config.json"
+
+    # ── colour palette ────────────────────────────────────────────────────────
+    _BG     = "#111111"
+    _TITLE  = "#00ff88"
+    _LABEL  = "#66aaff"
+    _VALUE  = "#ffffff"
+    _CHK    = "#cc88ff"
+    _STATUS = "#ffcc00"
+    _SEP    = "#333333"
+    _FONT   = "Courier"
+
+    def __init__(self, args) -> None:
+        self.root = tk.Tk()
+        self.root.title("wallpy")
+        self.root.resizable(False, False)
+        self.root.configure(bg=self._BG)
+
+        saved = self._load_config()
+
+        self._monitoring   = False
+        self._saver_active = False
+
+        self.idle_var   = tk.DoubleVar(value=saved.get("idle_time",  args.idle_time))
+        self.mode_var   = tk.StringVar(value=saved.get("mode",       args.mode or "random"))
+        self.fps_var    = tk.IntVar(   value=saved.get("fps",        args.fps))
+        self.time_var   = tk.BooleanVar(value=saved.get("show_time", getattr(args, "time", False)))
+        self.date_var   = tk.BooleanVar(value=saved.get("show_date", args.date))
+        self.status_var = tk.StringVar(value="● not monitoring")
+
+        self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _lbl(self, parent, text, **kw):
+        return tk.Label(parent, text=text, bg=self._BG, fg=self._LABEL,
+                        font=(self._FONT, 10, "bold"), **kw)
+
+    def _val_lbl(self, parent, **kw):
+        return tk.Label(parent, bg=self._BG, fg=self._VALUE,
+                        font=(self._FONT, 11), **kw)
+
+    # ── persistence ───────────────────────────────────────────────────────────
+
+    def _load_config(self) -> dict:
+        try:
+            return json.loads(self._CONFIG.read_text())
+        except Exception:
+            return {}
+
+    def _save_config(self) -> None:
+        try:
+            self._CONFIG.parent.mkdir(parents=True, exist_ok=True)
+            self._CONFIG.write_text(json.dumps({
+                "idle_time": self.idle_var.get(),
+                "mode":      self.mode_var.get(),
+                "fps":       self.fps_var.get(),
+                "show_time": self.time_var.get(),
+                "show_date": self.date_var.get(),
+            }, indent=2))
+        except Exception:
+            pass
+
+    # ── UI construction ───────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        BG  = self._BG
+        F   = self._FONT
+        PAD = 22
+
+        outer = tk.Frame(self.root, bg=BG, padx=PAD, pady=PAD)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        # title
+        tk.Label(outer, text="wallpy", bg=BG, fg=self._TITLE,
+                 font=(F, 26, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 20))
+
+        # art mode
+        self._lbl(outer, "ART MODE").grid(row=1, column=0, sticky="w")
+        om = tk.OptionMenu(outer, self.mode_var, "random", *MODES.keys())
+        om.config(bg="#1a1a2e", fg=self._VALUE, font=(F, 11),
+                  activebackground="#2a2a4e", activeforeground=self._VALUE,
+                  highlightthickness=0, bd=0)
+        om["menu"].config(bg="#1a1a2e", fg=self._VALUE, font=(F, 11),
+                          activebackground="#2a2a4e", activeforeground=self._VALUE)
+        om.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(14, 0))
+
+        # idle time
+        self._lbl(outer, "IDLE TIME").grid(row=2, column=0, sticky="w", pady=(14, 0))
+        idle_lbl = tk.StringVar()
+        def _upd_idle(*_): idle_lbl.set(f"{int(self.idle_var.get())} s")
+        self.idle_var.trace_add("write", _upd_idle); _upd_idle()
+        tk.Scale(outer, variable=self.idle_var, from_=10, to=1800,
+                 orient=tk.HORIZONTAL, showvalue=False, length=190,
+                 bg=BG, fg=self._TITLE, troughcolor="#2a2a2a",
+                 highlightthickness=0, bd=0).grid(
+            row=2, column=1, sticky="ew", padx=(14, 0), pady=(14, 0))
+        self._val_lbl(outer, textvariable=idle_lbl, width=6, anchor="w").grid(
+            row=2, column=2, sticky="w", pady=(14, 0))
+
+        # fps
+        self._lbl(outer, "FPS").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        fps_lbl = tk.StringVar()
+        def _upd_fps(*_): fps_lbl.set(str(self.fps_var.get()))
+        self.fps_var.trace_add("write", _upd_fps); _upd_fps()
+        tk.Scale(outer, variable=self.fps_var, from_=5, to=60,
+                 orient=tk.HORIZONTAL, showvalue=False, length=190,
+                 bg=BG, fg=self._TITLE, troughcolor="#2a2a2a",
+                 highlightthickness=0, bd=0).grid(
+            row=3, column=1, sticky="ew", padx=(14, 0), pady=(8, 0))
+        self._val_lbl(outer, textvariable=fps_lbl, width=6, anchor="w").grid(
+            row=3, column=2, sticky="w", pady=(8, 0))
+
+        # overlay toggles
+        self._lbl(outer, "OVERLAY").grid(row=4, column=0, sticky="w", pady=(12, 0))
+        chk = tk.Frame(outer, bg=BG)
+        chk.grid(row=4, column=1, columnspan=2, sticky="w",
+                 padx=(14, 0), pady=(12, 0))
+        ckw = dict(bg=BG, fg=self._CHK, selectcolor="#2a2a2a",
+                   activebackground=BG, activeforeground=self._CHK,
+                   font=(F, 11), bd=0, highlightthickness=0)
+        tk.Checkbutton(chk, text="clock", variable=self.time_var, **ckw).pack(side=tk.LEFT)
+        tk.Checkbutton(chk, text="date",  variable=self.date_var, **ckw).pack(
+            side=tk.LEFT, padx=(16, 0))
+
+        # divider + status
+        tk.Frame(outer, height=1, bg=self._SEP).grid(
+            row=5, column=0, columnspan=3, sticky="ew", pady=(18, 12))
+        tk.Label(outer, textvariable=self.status_var, bg=BG, fg=self._STATUS,
+                 font=(F, 11), anchor="w").grid(
+            row=6, column=0, columnspan=3, sticky="w")
+        tk.Frame(outer, height=1, bg=self._SEP).grid(
+            row=7, column=0, columnspan=3, sticky="ew", pady=(12, 18))
+
+        # buttons — use Label + binding instead of Button so macOS hit-testing
+        # works regardless of custom bg/relief settings
+        btns = tk.Frame(outer, bg=BG)
+        btns.grid(row=8, column=0, columnspan=3, sticky="ew")
+
+        def _make_lbl_btn(text_or_var, cmd, fg, bg_n, bg_a):
+            kw = ({"textvariable": text_or_var}
+                  if isinstance(text_or_var, tk.StringVar)
+                  else {"text": text_or_var})
+            lbl = tk.Label(btns, fg=fg, bg=bg_n, font=(F, 11, "bold"),
+                           padx=14, pady=7, cursor="hand2", **kw)
+            lbl.bind("<Enter>",           lambda e: lbl.config(bg=bg_a))
+            lbl.bind("<Leave>",           lambda e: lbl.config(bg=bg_n))
+            lbl.bind("<ButtonPress-1>",   lambda e: lbl.config(bg=bg_a))
+            def _release(e, _c=cmd, _l=lbl, _bg=bg_n):
+                _l.config(bg=_bg)
+                _c()
+            lbl.bind("<ButtonRelease-1>", _release)
+            return lbl
+
+        _make_lbl_btn("PREVIEW",       self._preview,        "#00ccff", "#003344", "#005566").pack(side=tk.LEFT)
+        self._mon_text = tk.StringVar(value="START MONITORING")
+        self._mon_btn  = _make_lbl_btn(self._mon_text, self._toggle_monitor, "#00ff88", "#002200", "#004400")
+        self._mon_btn.pack(side=tk.LEFT, padx=(10, 0))
+        _make_lbl_btn("QUIT",          self._quit,           "#ff6666", "#330000", "#550000").pack(side=tk.RIGHT)
+
+        outer.columnconfigure(1, weight=1)
+
+    # ── monitoring ────────────────────────────────────────────────────────────
+
+    def _toggle_monitor(self) -> None:
+        if self._monitoring:
+            self._monitoring = False
+            self.status_var.set("● not monitoring")
+            self._mon_text.set("START MONITORING")
+        else:
+            self._save_config()
+            self._monitoring = True
+            self._mon_text.set("STOP MONITORING")
+            self._poll_idle()
+
+    def _poll_idle(self) -> None:
+        if not self._monitoring:
+            return
+        idle      = get_idle_seconds()
+        threshold = self.idle_var.get()
+        self.status_var.set(f"◉ monitoring  —  idle {idle:.0f} s / {threshold:.0f} s")
+        if idle >= threshold and not self._saver_active:
+            self._saver_active = True
+            self._open_screensaver(on_close=lambda: setattr(self, "_saver_active", False))
+        self.root.after(2000, self._poll_idle)
+
+    # ── screensaver ───────────────────────────────────────────────────────────
+
+    def _preview(self) -> None:
+        self._save_config()
+        self._open_screensaver()
+
+    def _open_screensaver(self, on_close=None) -> None:
+        mode = self.mode_var.get()
+        if mode == "random":
+            mode = None
+        fps      = max(5, min(60, self.fps_var.get()))
+        cfg      = {"words_file": None,
+                    "show_time":  self.time_var.get(),
+                    "show_date":  self.date_var.get()}
+        frame_ms = max(1, 1000 // fps)
+
+        monitors = get_monitors()
+        if not monitors:
+            monitors = [(0, 0, self.root.winfo_screenwidth(),
+                         self.root.winfo_screenheight())]
+
+        _windows: List[tk.Toplevel] = []
+        _arts:    List[ArtMode]    = []
+        _running  = [True]
+
+        def _exit(_e=None):
+            if not _running[0]:
+                return
+            _running[0] = False
+            for w in _windows:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+            if on_close:
+                on_close()
+
+        for mx, my, mw, mh in monitors:
+            chosen = mode or random.choice(list(MODES))
+            win = tk.Toplevel(self.root)
+            win.overrideredirect(True)
+            win.geometry(f"{mw}x{mh}+{mx}+{my}")
+            win.configure(bg="black", cursor="none")
+            win.attributes("-topmost", True)
+
+            canvas = tk.Canvas(win, bg="black", highlightthickness=0,
+                               width=mw, height=mh)
+            canvas.pack(fill=tk.BOTH, expand=True)
+            win.update_idletasks()
+
+            for event in ("<KeyPress>", "<ButtonPress>"):
+                win.bind(event, _exit)
+            win.after(500, lambda w=win: w.bind("<Motion>", _exit))
+
+            art: ArtMode = MODES[chosen](canvas, mw, mh, config=cfg)
+            art.setup()
+
+            _add_clock_overlay(self.root, canvas, mw, mh,
+                               show_time=cfg["show_time"],
+                               show_date=cfg["show_date"],
+                               running=_running)
+            _windows.append(win)
+            _arts.append(art)
+
+        if _windows:
+            _windows[0].focus_force()
+
+        _perf = time.perf_counter
+
+        def _tick():
+            if not _running[0]:
+                return
+            t0 = _perf()
+            try:
+                for art in _arts:
+                    art.tick()
+            except tk.TclError:
+                return
+            elapsed_ms = int((_perf() - t0) * 1000)
+            self.root.after(max(1, frame_ms - elapsed_ms), _tick)
+
+        self.root.after(0, _tick)
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+
+    def _bring_to_front(self) -> None:
+        """Force window to the front on macOS after PyInstaller bundle launch.
+
+        PyInstaller bundles don't become the active app automatically, so the
+        window appears but clicks register as 'activate app' rather than
+        'click button'. Temporarily setting -topmost forces proper activation.
+        """
+        self.root.attributes("-topmost", True)
+        self.root.update()
+        self.root.lift()
+        self.root.focus_force()
+        self.root.after(400, lambda: self.root.attributes("-topmost", False))
+
+    def _on_close(self) -> None:
+        if self._monitoring:
+            self.root.iconify()   # minimize to Dock; monitoring keeps running
+        else:
+            self._quit()
+
+    def _quit(self) -> None:
+        self._monitoring = False
+        self.root.destroy()
+
+    def run(self) -> None:
+        if getattr(sys, "frozen", False) and platform.system() == "Darwin":
+            self.root.after(150, self._bring_to_front)
+        self.root.mainloop()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Strip macOS -psn_* process serial number injected by the OS when launching
+    # a .app bundle from Finder; argparse doesn't know this argument.
+    argv = [a for a in sys.argv if not a.startswith("-psn_")]
+
+    # When launched as a frozen .app bundle with no user arguments, open the
+    # settings / control UI instead of silently waiting for idle time.
+    _show_gui = getattr(sys, "frozen", False) and len(argv) == 1
+
     parser = argparse.ArgumentParser(
         prog="wallpy",
         description="wallpy — generative art screensaver",
@@ -914,7 +1233,11 @@ def main() -> None:
         "--list-modes", action="store_true",
         help="Print available art modes and exit",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--gui", action="store_true",
+        help="Open the settings / control window",
+    )
+    args = parser.parse_args(argv[1:])
 
     if args.list_modes:
         print("Available art modes:")
@@ -936,6 +1259,8 @@ def main() -> None:
 
     if args.preview:
         Screensaver(args.mode, args.fps, config=config)
+    elif _show_gui or args.gui:
+        WallpyApp(args).run()
     else:
         try:
             monitor(args.idle_time, args.mode, args.fps, config=config)
